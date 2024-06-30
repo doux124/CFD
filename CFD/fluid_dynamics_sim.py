@@ -10,21 +10,22 @@ import fluid_dynamics as fs
 
 def main():
     # Set cylinder, fluid, CFL, iterations and VTK export interval
-    cylinder = fs.Cylinder(radius=1.0, length=10.0, num_r=50, num_theta=50, num_z=50)
-    fluid = fs.Fluid(rho=1.225, nu=1.81e-5)  # Air at sea level
+    cylinder = fs.Cylinder(radius=1.0, length=10.0, num_r=10, num_theta=10, num_z=10)
+    fluid = fs.Fluid(rho=1060, nu=3.0e-6)  # Blood at sea level
     CFL = 0.5
     iterations = 100
     VTK_interval = 10
     
     # Set boundary conditions
-    vInflow, vOutflow = 1, 1
-    pInflow = 1
+    vInflow, vOutflow = 20, 10
+    pInflow = 10
 
     # Do not edit past this
     fs.makeResultDirectories(True)
     dt = fs.timeStep(CFL, cylinder)
 
     for i in range(iterations):
+        print("iteration:", i)
         cylinder.setVelocityBoundaries(vInflow, vOutflow)
         cylinder.setPressureBoundaries(pInflow) 
         u_r_star, u_z_star = fs.starred_velocities(cylinder, fluid, dt)

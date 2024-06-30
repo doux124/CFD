@@ -53,11 +53,11 @@ class Cylinder:
             source = np.zeros_like(self.grid[0])
         self.source = source
 
-    def createMatrices(self):
-        self.u = np.zeros_like(self.grid[0])
-        self.v = np.zeros_like(self.grid[0])
-        self.w = np.zeros_like(self.grid[0])
-        self.p = np.zeros_like(self.grid[0])
+    def createMatrices(self, epsilon=np.finfo(float).eps): #start with non-zero velocities and prssures
+        self.u = np.zeros_like(self.grid[0]) + epsilon
+        self.v = np.zeros_like(self.grid[0]) + epsilon
+        self.w = np.zeros_like(self.grid[0]) + epsilon
+        self.p = np.zeros_like(self.grid[0]) + epsilon
     
     def setDeltas(self):
         self.dr = self.radius / (self.num_r - 1)
@@ -132,7 +132,6 @@ def timeStep(CFL, cylinder):
 def solve_navier_stokes(CFL, cylinder, fluid):
     u, v, w, p, rho, nu, dr, dtheta, dz = cylinder.u, cylinder.v, cylinder.w, cylinder.p, fluid.rho, fluid.nu, cylinder.dr, cylinder.dtheta, cylinder.dz
     dt = timeStep(CFL, cylinder)
-    grid = cylinder.grid
     p = solve_pressure_poisson(p, rho, dr, dtheta, dz, dt, u, v, w)
 
     nr, ntheta, nz = u.shape  # Extract grid dimensions
@@ -162,6 +161,12 @@ def solve_navier_stokes(CFL, cylinder, fluid):
     v += dt * (-convective_v - dp_dtheta / (rho * np.expand_dims(np.arange(ntheta), axis=0)) + nu * laplacian_v)
     w += dt * (-convective_w - dp_dz / rho + nu * laplacian_w)
 
+    # Handle NaNs and infinities
+    handle_nan_inf(u)
+    handle_nan_inf(v)
+    handle_nan_inf(w)
+    handle_nan_inf(p)
+
     cylinder.u = u
     cylinder.v = v
     cylinder.w = w
@@ -170,7 +175,7 @@ def solve_navier_stokes(CFL, cylinder, fluid):
     return cylinder
 
 
-def solve_pressure_poisson(u_r, u_z, cylinder, fluid, dt, max_iter=1000, tol=1e-6):
+def solve_pressure_poisson(u_r, u_z, cylinder, fluid, dt, max_iter=100, tol=1e-6):
     # Initialize pressure correction array
     p_prime = np.zeros_like(u_r)
     
@@ -188,6 +193,9 @@ def solve_pressure_poisson(u_r, u_z, cylinder, fluid, dt, max_iter=1000, tol=1e-
     iter_count = 0
     residual = tol + 1  # Start with residual larger than tolerance
     
+    # Relaxation factor for stability
+    relaxation_factor = 0.8
+    
     # Jacobi iteration loop
     while iter_count < max_iter and residual > tol:
         p_prime_old = p_prime.copy()  # Store previous iteration
@@ -199,8 +207,20 @@ def solve_pressure_poisson(u_r, u_z, cylinder, fluid, dt, max_iter=1000, tol=1e-
                 term_z = alpha_z * (p_prime_old[i, j+1] + p_prime_old[i, j-1])
                 source_term = beta * ((u_r[i, j] - u_r[i-1, j]) / dr + (u_z[i, j] - u_z[i, j-1]) / dz)
                 
-                p_prime[i, j] = 0.5 * (term_r + term_z - source_term)
-        
+                # Adjust for numerical stability
+                while True:
+                    try:
+                        p_prime[i, j] = relaxation_factor * 0.5 * (term_r + term_z - source_term) + (1 - relaxation_factor) * p_prime_old[i, j]
+                        break
+                    except:
+                        term_r *= relaxation_factor
+                        term_z *= relaxation_factor
+
+
+        # Handle NaNs and infinities
+        p_prime[np.isnan(p_prime)] = 0
+        p_prime[np.isinf(p_prime)] = 0
+
         # Compute residual for convergence check
         residual = np.linalg.norm(p_prime - p_prime_old) / np.sqrt(nr * nz)
         
@@ -260,6 +280,11 @@ def starred_velocities(cylinder, fluid, dt):
                     + d2_z_u_z[i, j, k]
                 )
                 u_z_star[i, j, k] = u_z[i, j, k] + dt * (convective_term_z + diffusive_term_z)
+    
+    # Handle NaNs and infinities
+    handle_nan_inf(u_r_star)
+    handle_nan_inf(u_z_star)
+    
     return u_r_star, u_z_star
 
 def laplacian_cylindrical(field, dr, dtheta, dz):
@@ -272,12 +297,20 @@ def laplacian_cylindrical(field, dr, dtheta, dz):
 def d1(field, dr, dtheta, dz): # first derivative
     d1_r = ((np.roll(field, -1, axis=0) - np.roll(field, 1, axis=0))) / (dr*2)
     d1_z = ((np.roll(field, -1, axis=2) - np.roll(field, 1, axis=2))) / (dz*2)
+    handle_nan_inf(d1_r)
+    handle_nan_inf(d1_z)
     return d1_r, d1_z
 
 def d2(field, dr, dtheta, dz): # second derivative
     d2_r = ((np.roll(field, -1, axis=0) - 2 * field + np.roll(field, 1, axis=0))) / (dr**2)
     d2_z = ((np.roll(field, -1, axis=2) - 2 * field + np.roll(field, 1, axis=2))) / (dz**2)
+    handle_nan_inf(d2_r)
+    handle_nan_inf(d2_z)
     return d2_r, d2_z
+
+def handle_nan_inf(array, epsilon=np.finfo(float).eps):
+    array[np.isnan(array)] = epsilon
+    array[np.isinf(array)] = epsilon
 
 def makeResultDirectories(wipe=False):
     cwdir = os.getcwd()
@@ -349,15 +382,32 @@ def writeToVTK(cylinder, i, interval):
 
         # Create a structured grid
         grid = vtk.vtkStructuredGrid()
-        grid.SetDimensions(nr, nz, ntheta)
+        grid.SetDimensions(nr, ntheta, nz)
+
+        # Create VTK points
+        points = vtk.vtkPoints()
+        for i in range(nr):
+            for j in range(ntheta):
+                for k in range(nz):
+                    points.InsertNextPoint(i, j, k)
+        
+        grid.SetPoints(points)
 
         # Create VTK arrays for velocity components
         u_r_array = vtk.vtkDoubleArray()
         u_r_array.SetName("u_r")
+        u_r_array.SetNumberOfComponents(1)
+        u_r_array.SetNumberOfTuples(nr * ntheta * nz)
+        
         u_z_array = vtk.vtkDoubleArray()
         u_z_array.SetName("u_z")
+        u_z_array.SetNumberOfComponents(1)
+        u_z_array.SetNumberOfTuples(nr * ntheta * nz)
+        
         u_theta_array = vtk.vtkDoubleArray()
         u_theta_array.SetName("u_theta")
+        u_theta_array.SetNumberOfComponents(1)
+        u_theta_array.SetNumberOfTuples(nr * ntheta * nz)
         
         # Flatten the arrays (VTK requires flat arrays)
         u_r_flat = u_r.flatten(order='F')  # Fortran order to match VTK's column-major order
@@ -365,9 +415,14 @@ def writeToVTK(cylinder, i, interval):
         u_theta_flat = u_theta.flatten(order='F')
 
         # Set data to VTK arrays
-        u_r_array.SetArray(u_r_flat, len(u_r_flat), 1)
-        u_z_array.SetArray(u_z_flat, len(u_z_flat), 1)
-        u_theta_array.SetArray(u_theta_flat, len(u_theta_flat), 1)
+        for index, value in enumerate(u_r_flat):
+            u_r_array.SetValue(index, value)
+        
+        for index, value in enumerate(u_z_flat):
+            u_z_array.SetValue(index, value)
+        
+        for index, value in enumerate(u_theta_flat):
+            u_theta_array.SetValue(index, value)
         
         # Add arrays to grid
         grid.GetPointData().AddArray(u_r_array)
