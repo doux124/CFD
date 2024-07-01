@@ -38,15 +38,12 @@ class Cylinder:
         self.num_theta = num_theta
         self.num_z = num_z
         self.radial_points = np.linspace(0, self.radius, self.num_r)
-        self.grid = self.createGrid(self.radial_points)
+        self.axial_points = np.linspace(0, self.length, self.num_z)
+        self.theta_points = np.linspace(0, 2 * np.pi, self.num_theta)
+        self.grid = np.meshgrid(self.radial_points, self.theta_points, self.axial_points)
         self.createSource()
         self.createMatrices()
         self.setDeltas()
-
-    def createGrid(self, radial_points):
-        axial_points = np.linspace(0, self.length, self.num_z)
-        r, theta, z = np.meshgrid(radial_points, np.linspace(0, 2 * np.pi, self.num_theta), axial_points)
-        return r, theta, z
 
     def createSource(self, source=None):
         if source is None:
@@ -365,12 +362,6 @@ def writeToVTK(cylinder, i, interval):
         u_z = cylinder.w
         p = cylinder.p
 
-        # Replace NaN values with 0
-        u_r[np.isnan(u_r)] = 0
-        u_theta[np.isnan(u_theta)] = 0
-        u_z[np.isnan(u_z)] = 0
-        p[np.isnan(p)] = 0
-
         # Save u_r, u_theta, u_z, p as text files
         np.savetxt(txt_u_r_path, u_r.flatten())
         np.savetxt(txt_u_theta_path, u_theta.flatten())
@@ -380,54 +371,41 @@ def writeToVTK(cylinder, i, interval):
         # Get grid dimensions
         nr, ntheta, nz = cylinder.num_r, cylinder.num_theta, cylinder.num_z
 
+        # Convert cylindrical to Cartesian coordinates
+        r_coords = cylinder.radial_points
+        z_coords = cylinder.axial_points
+        theta_coords = cylinder.theta_points
+        x_coords = np.outer(r_coords, np.cos(theta_coords))
+        y_coords = np.outer(r_coords, np.sin(theta_coords))
+
         # Create a structured grid
         grid = vtk.vtkStructuredGrid()
         grid.SetDimensions(nr, ntheta, nz)
 
-        # Create VTK points
+        # Create the points array
         points = vtk.vtkPoints()
+        
         for i in range(nr):
             for j in range(ntheta):
                 for k in range(nz):
-                    points.InsertNextPoint(i, j, k)
+                    x = x_coords[i, j]
+                    y = y_coords[i, j]
+                    z = z_coords[k]
+                    points.InsertNextPoint(x, y, z)
         
         grid.SetPoints(points)
-
-        # Create VTK arrays for velocity components
-        u_r_array = vtk.vtkDoubleArray()
-        u_r_array.SetName("u_r")
-        u_r_array.SetNumberOfComponents(1)
-        u_r_array.SetNumberOfTuples(nr * ntheta * nz)
         
-        u_z_array = vtk.vtkDoubleArray()
-        u_z_array.SetName("u_z")
-        u_z_array.SetNumberOfComponents(1)
-        u_z_array.SetNumberOfTuples(nr * ntheta * nz)
+        # Create velocity arrays
+        velocity = vtk.vtkFloatArray()
+        velocity.SetNumberOfComponents(3)
+        velocity.SetName("Velocity")
         
-        u_theta_array = vtk.vtkDoubleArray()
-        u_theta_array.SetName("u_theta")
-        u_theta_array.SetNumberOfComponents(1)
-        u_theta_array.SetNumberOfTuples(nr * ntheta * nz)
+        for i in range(nr):
+            for j in range(ntheta):
+                for k in range(nz):
+                    velocity.InsertNextTuple3(u_r[i, j, k], u_theta[i, j, k], u_z[i, j, k])
         
-        # Flatten the arrays (VTK requires flat arrays)
-        u_r_flat = u_r.flatten(order='F')  # Fortran order to match VTK's column-major order
-        u_z_flat = u_z.flatten(order='F')
-        u_theta_flat = u_theta.flatten(order='F')
-
-        # Set data to VTK arrays
-        for index, value in enumerate(u_r_flat):
-            u_r_array.SetValue(index, value)
-        
-        for index, value in enumerate(u_z_flat):
-            u_z_array.SetValue(index, value)
-        
-        for index, value in enumerate(u_theta_flat):
-            u_theta_array.SetValue(index, value)
-        
-        # Add arrays to grid
-        grid.GetPointData().AddArray(u_r_array)
-        grid.GetPointData().AddArray(u_z_array)
-        grid.GetPointData().AddArray(u_theta_array)
+        grid.GetPointData().SetVectors(velocity)
         
         # Write to VTK file
         writer = vtk.vtkXMLStructuredGridWriter()
